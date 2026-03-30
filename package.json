@@ -1,0 +1,37 @@
+{
+  "name": "kommo-agent",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "nodemon --exec ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "clear:history": "ts-node src/scripts/clearHistory.ts",
+    "ingest:docs": "ts-node src/scripts/ingestDocs.ts",
+    "check:pinecone": "ts-node src/scripts/checkPinecone.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "latest",
+    "@openrouter/ai-sdk-provider": "^2.2.3",
+    "@pinecone-database/pinecone": "latest",
+    "ai": "latest",
+    "dotenv": "latest",
+    "express": "latest",
+    "ioredis": "latest",
+    "openai": "latest",
+    "pg": "latest",
+    "uuid": "^13.0.0",
+    "winston": "^3.19.0",
+    "winston-daily-rotate-file": "^5.0.0",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.5",
+    "@types/express": "latest",
+    "@types/node": "latest",
+    "@types/pg": "latest",
+    "@types/uuid": "^10.0.0",
+    "nodemon": "latest",
+    "ts-node": "latest",
+    "typescript": "latest"
+  }
+}
