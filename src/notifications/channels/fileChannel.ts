@@ -23,8 +23,10 @@ export class FileChannel implements NotificationChannel {
       level: n.level === 'warning' ? 'warn' : n.level,
       fn: n.fn,
       entityId: n.entityId,
+      requestId: n.requestId,
       message: n.message,
       error: n.error instanceof Error ? n.error.message : n.error,
+      stack: n.error instanceof Error ? n.error.stack : undefined,
       extra: n.extra,
     })
   }

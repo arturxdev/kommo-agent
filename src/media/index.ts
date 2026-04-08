@@ -1,4 +1,5 @@
 import OpenAI, { toFile } from "openai";
+import { notifier } from "../notifications/index";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -7,14 +8,14 @@ export async function processMessage(message: {
   text?: string;
   url?: string;
 }): Promise<string> {
-  console.log(`[Media] Procesando tipo: ${message.type}`);
+  await notifier.notify({ level: 'info', fn: 'media', message: `Procesando tipo: ${message.type}` });
 
   if (message.type === "text") {
     return message.text ?? "";
   }
 
   if (message.type === "audio") {
-    console.log(`[Media] Descargando audio desde: ${message.url}`);
+    await notifier.notify({ level: 'info', fn: 'media/audio', message: `Descargando audio desde: ${message.url}` });
 
     const response = await fetch(message.url!).catch(() => {
       throw new Error("[Media] No se pudo descargar el audio");
@@ -38,7 +39,7 @@ export async function processMessage(message: {
       );
     }
 
-    console.log(`[Media] Transcripción: "${transcription.text.slice(0, 60)}..."`);
+    await notifier.notify({ level: 'info', fn: 'media/audio', message: `Transcripcion: "${transcription.text.slice(0, 60)}..."` });
     return transcription.text;
   }
 

@@ -1,4 +1,5 @@
 import "dotenv/config";
+import crypto from "crypto";
 import express from "express";
 import { handleIncoming } from "./queue/debounce";
 import { processMessage } from "./media";
@@ -29,8 +30,10 @@ app.post("/webhook/kommo", async (req, res) => {
   const text: string = message?.text ?? "";
   const type: string = message?.type === "incoming" ? "text" : (message?.attachment?.type ?? "text");
 
+  const requestId = crypto.randomUUID().slice(0, 8);
+
   if (!entityId) {
-    await notifier.notify({ level: 'warning', fn: 'webhook/kommo', message: `Webhook sin entityId: ${JSON.stringify(req.body)}` })
+    await notifier.notify({ level: 'warning', fn: 'webhook/kommo', requestId, message: `Webhook sin entityId: ${JSON.stringify(req.body)}` })
     return;
   }
 
@@ -43,7 +46,7 @@ app.post("/webhook/kommo", async (req, res) => {
     author: message?.author?.name ?? "Desconocido",
   };
 
-  await notifier.notify({ level: 'info', fn: 'webhook/kommo', entityId, message: `Mensaje recibido de: ${incomingMessage.author} | texto: "${text}"` })
+  await notifier.notify({ level: 'info', fn: 'webhook/kommo', entityId, requestId, message: `Mensaje recibido de: ${incomingMessage.author} | texto: "${text}"` })
 
   handleIncoming(entityId, incomingMessage)
     .then(async (messages) => {
@@ -56,14 +59,15 @@ app.post("/webhook/kommo", async (req, res) => {
       );
 
       try {
-        const responses = await runAgent(entityId, processed);
+        const responses = await runAgent(entityId, processed, requestId);
         await sendMessages(entityId, responses);
-        await notifier.notify({ level: 'info', fn: 'webhook/pipeline', entityId, message: `${responses.length} mensajes enviados` });
+        await notifier.notify({ level: 'info', fn: 'webhook/pipeline', entityId, requestId, message: `${responses.length} mensajes enviados` });
       } catch (err) {
         await notifier.notify({
           level: 'error',
           fn: 'webhook/pipeline',
           entityId,
+          requestId,
           message: err instanceof Error ? err.message : String(err),
           error: err,
         });
@@ -74,6 +78,7 @@ app.post("/webhook/kommo", async (req, res) => {
         level: 'error',
         fn: 'webhook/debounce',
         entityId,
+        requestId,
         message: err instanceof Error ? err.message : String(err),
         error: err,
       });

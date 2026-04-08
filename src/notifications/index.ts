@@ -3,6 +3,7 @@ export interface Notification {
   fn: string
   message: string
   entityId?: string
+  requestId?: string
   error?: Error | unknown
   extra?: object
 }

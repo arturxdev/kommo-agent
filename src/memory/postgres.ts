@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 import type { ModelMessage } from "ai";
+import { notifier } from "../notifications/index";
 
 const pool = new Pool({ connectionString: process.env.POSTGRES_URL });
 
@@ -33,7 +34,7 @@ pool.query(`
     content TEXT,
     created_at TIMESTAMP DEFAULT now()
   );
-`).catch((err) => console.error("[Memory] Error creando tablas:", err));
+`).catch((err) => notifier.notify({ level: 'error', fn: 'memory/init', message: 'Error creando tablas', error: err }));
 
 export async function getChatHistory(sessionId: string): Promise<ModelMessage[]> {
   const result = await pool.query(

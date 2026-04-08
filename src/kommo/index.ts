@@ -1,4 +1,5 @@
 // Kommo: API client for Kommo CRM integration
+import { notifier } from "../notifications/index";
 
 const BASE = `https://${process.env.KOMMO_SUBDOMAIN}.kommo.com/api`;
 const TOKEN = () => process.env.KOMMO_TOKEN!;
@@ -37,7 +38,7 @@ export async function setResponseField(
 	entityId: string,
 	text: string,
 ): Promise<void> {
-	console.log(`[Kommo] Guardando respuesta en campo del lead: ${entityId}`);
+	await notifier.notify({ level: 'info', fn: 'kommo/setResponseField', entityId, message: `Guardando respuesta en campo del lead` });
 	await request("setResponseField", `${BASE}/v4/leads/${entityId}`, {
 		method: "PATCH",
 		body: JSON.stringify({
@@ -52,9 +53,7 @@ export async function setResponseField(
 }
 
 export async function launchSalesbot(entityId: string): Promise<void> {
-	console.log(
-		`[Kommo] Lanzando salesbot para: ${entityId} bot_id: ${process.env.TEXT_BOT_ID}`,
-	);
+	await notifier.notify({ level: 'info', fn: 'kommo/launchSalesbot', entityId, message: `Lanzando salesbot bot_id: ${process.env.TEXT_BOT_ID}` });
 	await request("launchSalesbot", `${BASE}/v2/salesbot/run`, {
 		method: "POST",
 		body: JSON.stringify([
@@ -65,7 +64,7 @@ export async function launchSalesbot(entityId: string): Promise<void> {
 			},
 		]),
 	});
-	console.log(`[Kommo] ✅ Salesbot lanzado`);
+	await notifier.notify({ level: 'info', fn: 'kommo/launchSalesbot', entityId, message: `Salesbot lanzado` });
 }
 
 export async function moveLeadToAppointmentStage(
@@ -73,7 +72,7 @@ export async function moveLeadToAppointmentStage(
 	priority: "alta" | "baja" = "baja",
 ): Promise<void> {
 	const statusId = priority === "alta" ? 94318696 : 103161339;
-	console.log(`[Kommo] Moviendo lead ${leadId} a etapa de ${priority} (status: ${statusId})`);
+	await notifier.notify({ level: 'info', fn: 'kommo/moveStage', entityId: leadId, message: `Moviendo a etapa ${priority} (status: ${statusId})` });
 	await request("moveLeadToAppointmentStage", `${BASE}/v4/leads/${leadId}`, {
 		method: "PATCH",
 		body: JSON.stringify({
@@ -81,14 +80,14 @@ export async function moveLeadToAppointmentStage(
 			status_id: statusId,
 		}),
 	});
-	console.log(`[Kommo] ✅ Lead ${leadId} movido a etapa de ${priority}`);
+	await notifier.notify({ level: 'info', fn: 'kommo/moveStage', entityId: leadId, message: `Lead movido a etapa ${priority}` });
 }
 
 export async function updateLeadPrice(
 	leadId: string,
 	price: number,
 ): Promise<void> {
-	console.log(`[Kommo] Actualizando precio del lead ${leadId}: $${price}`);
+	await notifier.notify({ level: 'info', fn: 'kommo/updatePrice', entityId: leadId, message: `Actualizando precio: $${price}` });
 	await request("updateLeadPrice", `${BASE}/v4/leads`, {
 		method: "PATCH",
 		body: JSON.stringify([
@@ -98,14 +97,14 @@ export async function updateLeadPrice(
 			},
 		]),
 	});
-	console.log(`[Kommo] ✅ Precio actualizado`);
+	await notifier.notify({ level: 'info', fn: 'kommo/updatePrice', entityId: leadId, message: `Precio actualizado` });
 }
 
 export async function addLeadNote(
 	leadId: string,
 	text: string,
 ): Promise<void> {
-	console.log(`[Kommo] Agregando nota al lead ${leadId}`);
+	await notifier.notify({ level: 'info', fn: 'kommo/addNote', entityId: leadId, message: `Agregando nota` });
 	await request("addLeadNote", `${BASE}/v4/leads/notes`, {
 		method: "POST",
 		body: JSON.stringify([
@@ -116,7 +115,7 @@ export async function addLeadNote(
 			},
 		]),
 	});
-	console.log(`[Kommo] ✅ Nota agregada`);
+	await notifier.notify({ level: 'info', fn: 'kommo/addNote', entityId: leadId, message: `Nota agregada` });
 }
 
 export async function sendMessages(
@@ -128,7 +127,7 @@ export async function sendMessages(
 	for (const message of messages) {
 		await setResponseField(entityId, message);
 		await launchSalesbot(entityId);
-		console.log(`[Kommo] ✅ Mensaje enviado: "${message.slice(0, 60)}"`);
+		await notifier.notify({ level: 'info', fn: 'kommo/sendMessages', entityId, message: `Mensaje enviado: "${message.slice(0, 60)}"` });
 
 		if (messages.indexOf(message) < messages.length - 1) {
 			await new Promise((r) => setTimeout(r, delay));

@@ -1,8 +1,9 @@
 import Redis from "ioredis";
 import "dotenv/config";
+import { notifier } from "../notifications/index";
 
 const DEBOUNCE_MS = (parseInt(process.env.DEBOUNCE_SECONDS ?? "10")) * 1000;
-console.log(`[Debounce] Tiempo de espera: ${DEBOUNCE_MS / 1000}s`);
+notifier.notify({ level: 'info', fn: 'debounce', message: `Tiempo de espera: ${DEBOUNCE_MS / 1000}s` });
 
 export const redis = new Redis(process.env.REDIS_URL!);
 
@@ -15,22 +16,22 @@ export async function handleIncoming(
 
   // 2. Generate unique token
   const myToken = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  console.log(`[${entityId}] 📨 Mensaje recibido | token: ${myToken} | total en cola: ${await redis.llen(entityId)}`);
+  await notifier.notify({ level: 'info', fn: 'debounce', entityId, message: `Mensaje recibido | token: ${myToken} | total en cola: ${await redis.llen(entityId)}` });
 
   // 3. Store token with 60s expiry
   await redis.set(`token:${entityId}`, myToken, "EX", 60);
-  console.log(`[${entityId}] ⏱️  Esperando ${DEBOUNCE_MS / 1000}s...`);
+  await notifier.notify({ level: 'info', fn: 'debounce', entityId, message: `Esperando ${DEBOUNCE_MS / 1000}s...` });
 
   // 4. Wait DEBOUNCE_MS
   await new Promise<void>((r) => setTimeout(r, DEBOUNCE_MS));
 
   // 5. Read current token
   const currentToken = await redis.get(`token:${entityId}`);
-  console.log(`[${entityId}] 🔍 Revisando token | mío: ${myToken} | actual: ${currentToken}`);
+  await notifier.notify({ level: 'info', fn: 'debounce', entityId, message: `Revisando token | mio: ${myToken} | actual: ${currentToken}` });
 
   // 6. If token mismatch, another call took ownership
   if (currentToken !== myToken) {
-    console.log(`[${entityId}] ✋ Cediendo — llegó un mensaje más reciente`);
+    await notifier.notify({ level: 'info', fn: 'debounce', entityId, message: `Cediendo — llego un mensaje mas reciente` });
     return null;
   }
 
@@ -42,8 +43,8 @@ export async function handleIncoming(
   await redis.del(`token:${entityId}`);
 
   const messages = raw.map((item) => JSON.parse(item) as object);
-  console.log(`[${entityId}] ✅ Procesando batch de ${raw.length} mensajes`);
-  console.log(`[${entityId}] 📦 Mensajes:`, messages);
+  await notifier.notify({ level: 'info', fn: 'debounce', entityId, message: `Procesando batch de ${raw.length} mensajes` });
+  await notifier.notify({ level: 'info', fn: 'debounce', entityId, message: `Mensajes: ${JSON.stringify(messages)}` });
 
   return messages;
 }

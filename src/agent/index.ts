@@ -1,18 +1,17 @@
 import { buildSystemPrompt } from "./prompts";
 import { selectUserData, upsertUserData, getUserData, searchKnowledgeBase, transferLead } from "./tools";
 import { getChatHistory, saveChatHistory } from "../memory/postgres";
+import { notifier } from "../notifications/index";
 
 const responseSchema = {
   name: "agent_response",
-  strict: false,
+  strict: true,
   schema: {
     type: "object",
     properties: {
       messages: {
         type: "array",
-        items: { type: "string", maxLength: 256 },
-        minItems: 1,
-        maxItems: 5,
+        items: { type: "string" },
       },
     },
     required: ["messages"],
@@ -100,6 +99,24 @@ function buildTools() {
   ];
 }
 
+function safeParseJSON(text: string): any | null {
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Try extracting JSON from markdown code fences
+    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fenceMatch) {
+      try { return JSON.parse(fenceMatch[1].trim()); } catch {}
+    }
+    // Try extracting a JSON object from the text
+    const objMatch = text.match(/\{[\s\S]*\}/);
+    if (objMatch) {
+      try { return JSON.parse(objMatch[0]); } catch {}
+    }
+    return null;
+  }
+}
+
 async function callOpenRouter(messages: any[], systemPrompt: string) {
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -123,7 +140,7 @@ async function callOpenRouter(messages: any[], systemPrompt: string) {
   return response.json();
 }
 
-async function runWithTools(messages: any[], systemPrompt: string): Promise<string[]> {
+async function runWithTools(messages: any[], systemPrompt: string, entityId: string, requestId?: string): Promise<string[]> {
   const loop = [...messages];
 
   for (let i = 0; i < 5; i++) {
@@ -136,26 +153,57 @@ async function runWithTools(messages: any[], systemPrompt: string): Promise<stri
 
       for (const toolCall of assistantMsg.tool_calls) {
         const toolName = toolCall.function.name;
-        const args = JSON.parse(toolCall.function.arguments);
+        let args: any;
+        try {
+          args = JSON.parse(toolCall.function.arguments);
+        } catch (parseErr) {
+          await notifier.notify({
+            level: 'error',
+            fn: `tool/${toolName}`,
+            entityId,
+            requestId,
+            message: `Argumentos inválidos para ${toolName}`,
+            error: parseErr,
+            extra: { raw: toolCall.function.arguments },
+          });
+          loop.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: JSON.stringify({ error: `Invalid tool arguments for ${toolName}` }),
+          });
+          continue;
+        }
+
+        await notifier.notify({
+          level: 'info',
+          fn: `tool/${toolName}`,
+          entityId,
+          requestId,
+          message: `Llamando ${toolName}`,
+          extra: { args },
+        });
 
         let result: any;
         if (toolName === "select_user_data") {
-          console.log(`[Tool] select_user_data → session_id: ${args.session_id}`);
           result = await selectUserData.execute!(args, {} as any);
         } else if (toolName === "upsert_user_data") {
-          const campos = Object.keys(args).filter(k => k !== "session_id" && args[k] != null);
-          console.log(`[Tool] upsert_user_data → session_id: ${args.session_id}, campos: [${campos.join(", ")}]`);
           result = await upsertUserData.execute!(args, {} as any);
         } else if (toolName === "search_knowledge_base") {
-          console.log(`[Tool] search_knowledge_base → query: "${args.query}"`);
           result = await searchKnowledgeBase.execute!(args, {} as any);
         } else if (toolName === "transfer_lead") {
-          console.log(`[Tool] transfer_lead → session_id: ${args.session_id}, priority: ${args.priority}, price: ${args.price}`);
           result = await transferLead.execute!(args, {} as any);
         } else {
-          console.log(`[Tool] Unknown tool: ${toolName}`);
           result = { error: `Unknown tool: ${toolName}` };
         }
+
+        await notifier.notify({
+          level: 'info',
+          fn: `tool/${toolName}`,
+          entityId,
+          requestId,
+          message: `Resultado ${toolName}`,
+          extra: { result },
+        });
 
         loop.push({
           role: "tool",
@@ -167,17 +215,37 @@ async function runWithTools(messages: any[], systemPrompt: string): Promise<stri
       continue;
     }
 
-    return JSON.parse(choice.message.content).messages;
+    const parsed = safeParseJSON(choice.message.content);
+    if (parsed && Array.isArray(parsed.messages) && parsed.messages.length > 0) {
+      return parsed.messages;
+    }
+
+    await notifier.notify({
+      level: 'warning',
+      fn: 'agent/retry',
+      entityId,
+      requestId,
+      message: `Respuesta sin messages válido (intento ${i + 1}/5), reintentando...`,
+      extra: { content: choice.message.content?.slice(0, 200) },
+    });
+    continue;
   }
 
-  throw new Error("[Agent] Se agotaron los pasos maximos");
+  await notifier.notify({
+    level: 'error',
+    fn: 'agent/retry',
+    entityId,
+    requestId,
+    message: 'Se agotaron los reintentos, enviando mensaje fallback',
+  });
+  return ["Lo siento, no pude procesar tu mensaje. ¿Podrías intentarlo de nuevo?"];
 }
 
-export async function runAgent(entityId: string, messages: string[]): Promise<string[]> {
-  console.log(`[Agent] Iniciando para: ${entityId}`);
+export async function runAgent(entityId: string, messages: string[], requestId?: string): Promise<string[]> {
+  await notifier.notify({ level: 'info', fn: 'agent', entityId, requestId, message: `Iniciando para: ${entityId}` });
 
   const history = await getChatHistory(entityId);
-  console.log(`[Agent] Historial: ${history.length} mensajes previos`);
+  await notifier.notify({ level: 'info', fn: 'agent', entityId, requestId, message: `Historial: ${history.length} mensajes previos` });
 
   const userRow = await getUserData(entityId);
   const userData = userRow ?? { status: null, person_name: null, project_name: null };
@@ -187,14 +255,18 @@ export async function runAgent(entityId: string, messages: string[]): Promise<st
 
   const parts = await runWithTools(
     [...(history as any[]), { role: "user", content: userMessage }],
-    systemPrompt
+    systemPrompt,
+    entityId,
+    requestId
   );
 
   await saveChatHistory(entityId, "user", userMessage);
   await saveChatHistory(entityId, "assistant", parts.join(" "));
 
-  console.log(`[Agent] ${parts.length} mensajes generados`);
-  parts.forEach((p, i) => console.log(`[Agent] Mensaje ${i + 1} (${p.length} chars): "${p}"`));
+  await notifier.notify({ level: 'info', fn: 'agent', entityId, requestId, message: `${parts.length} mensajes generados` });
+  for (const [i, p] of parts.entries()) {
+    await notifier.notify({ level: 'info', fn: 'agent', entityId, requestId, message: `Mensaje ${i + 1} (${p.length} chars): "${p}"` });
+  }
 
   return parts;
 }
