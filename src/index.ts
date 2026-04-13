@@ -26,9 +26,8 @@ app.post("/webhook/kommo", async (req, res) => {
   res.sendStatus(200);
 
   const message = req.body?.message?.add?.[0];
+  console.log(message)
   const entityId: string | undefined = message?.entity_id;
-  const text: string = message?.text ?? "";
-  const type: string = message?.type === "incoming" ? "text" : (message?.attachment?.type ?? "text");
 
   const requestId = crypto.randomUUID().slice(0, 8);
 
@@ -37,16 +36,32 @@ app.post("/webhook/kommo", async (req, res) => {
     return;
   }
 
-  const incomingMessage = {
-    type: "text",
-    text,
-    timestamp: Date.now(),
-    contact_id: message?.contact_id,
-    chat_id: message?.chat_id,
-    author: message?.author?.name ?? "Desconocido",
-  };
+  const attachmentType: string | undefined = message?.attachment?.type;
+  const isVoice = attachmentType === "voice" || attachmentType === "audio";
 
-  await notifier.notify({ level: 'info', fn: 'webhook/kommo', entityId, requestId, message: `Mensaje recibido de: ${incomingMessage.author} | texto: "${text}"` })
+  const incomingMessage = isVoice
+    ? {
+        type: "audio" as const,
+        url: message?.attachment?.link as string | undefined,
+        file_name: message?.attachment?.file_name as string | undefined,
+        timestamp: Date.now(),
+        contact_id: message?.contact_id,
+        chat_id: message?.chat_id,
+        author: message?.author?.name ?? "Desconocido",
+      }
+    : {
+        type: "text" as const,
+        text: (message?.text ?? "") as string,
+        timestamp: Date.now(),
+        contact_id: message?.contact_id,
+        chat_id: message?.chat_id,
+        author: message?.author?.name ?? "Desconocido",
+      };
+
+  const logPreview = isVoice
+    ? `[audio] ${message?.attachment?.file_name ?? ""}`
+    : `texto: "${message?.text ?? ""}"`;
+  await notifier.notify({ level: 'info', fn: 'webhook/kommo', entityId, requestId, message: `Mensaje recibido de: ${incomingMessage.author} | ${logPreview}` })
 
   handleIncoming(entityId, incomingMessage)
     .then(async (messages) => {

@@ -30,8 +30,8 @@ export async function processMessage(message: {
     let transcription;
     try {
       transcription = await openai.audio.transcriptions.create({
-        file: await toFile(buffer, "audio.ogg", { type: "audio/ogg" }),
-        model: "whisper-1",
+        file: await toFile(buffer, "audio.m4a", { type: "audio/mp4" }),
+        model: "gpt-4o-mini-transcribe",
       });
     } catch (err) {
       throw new Error(
