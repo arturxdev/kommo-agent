@@ -3,6 +3,8 @@ import { selectUserData, upsertUserData, getUserData, searchKnowledgeBase, trans
 import { getChatHistory, saveChatHistory } from "../memory/postgres";
 import { notifier } from "../notifications/index";
 
+export const FALLBACK_MESSAGE = "Lo siento, no pude procesar tu mensaje. ¿Podrías intentarlo de nuevo?";
+
 const responseSchema = {
   name: "agent_response",
   strict: true,
@@ -17,6 +19,37 @@ const responseSchema = {
     required: ["messages"],
     additionalProperties: false,
   },
+};
+
+interface ToolCall {
+  id: string;
+  function: { name: string; arguments: string };
+}
+
+interface ChatMessage {
+  role: string;
+  content?: string | null;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+}
+
+interface OpenRouterChoice {
+  finish_reason?: string;
+  message: {
+    content?: string | null;
+    tool_calls?: ToolCall[];
+  };
+}
+
+interface OpenRouterResponse {
+  choices?: OpenRouterChoice[];
+}
+
+const TOOL_DISPATCH: Record<string, (args: any) => Promise<unknown>> = {
+  select_user_data: selectUserData,
+  upsert_user_data: upsertUserData,
+  search_knowledge_base: searchKnowledgeBase,
+  transfer_lead: transferLead,
 };
 
 function buildTools() {
@@ -47,7 +80,6 @@ function buildTools() {
             status: { type: "string", description: "Estado del lead" },
             person_name: { type: "string", description: "Nombre del usuario" },
             project_name: { type: "string", description: "Proyecto de interes" },
-            priority: { type: "string", enum: ["alta", "baja"], description: "Prioridad del lead" },
             tipologia_answer: { type: "string", description: "Respuesta a pregunta de tipologia" },
             tipologia_score: { type: "number", description: "Puntaje de tipologia (max 10)" },
             separacion_answer: { type: "string", description: "Respuesta a pregunta de separacion" },
@@ -99,16 +131,14 @@ function buildTools() {
   ];
 }
 
-function safeParseJSON(text: string): any | null {
+function safeParseJSON(text: string): unknown {
   try {
     return JSON.parse(text);
   } catch {
-    // Try extracting JSON from markdown code fences
     const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (fenceMatch) {
       try { return JSON.parse(fenceMatch[1].trim()); } catch {}
     }
-    // Try extracting a JSON object from the text
     const objMatch = text.match(/\{[\s\S]*\}/);
     if (objMatch) {
       try { return JSON.parse(objMatch[0]); } catch {}
@@ -117,7 +147,7 @@ function safeParseJSON(text: string): any | null {
   }
 }
 
-async function callOpenRouter(messages: any[], systemPrompt: string) {
+async function callOpenRouter(messages: ChatMessage[], systemPrompt: string): Promise<OpenRouterResponse> {
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -137,23 +167,30 @@ async function callOpenRouter(messages: any[], systemPrompt: string) {
     throw new Error(`[Agent] OpenRouter error ${response.status}: ${error}`);
   }
 
-  return response.json();
+  return response.json() as Promise<OpenRouterResponse>;
 }
 
-async function runWithTools(messages: any[], systemPrompt: string, entityId: string, requestId?: string): Promise<string[]> {
-  const loop = [...messages];
+async function runWithTools(messages: ChatMessage[], systemPrompt: string, entityId: string, requestId?: string): Promise<string[]> {
+  const loop: ChatMessage[] = [...messages];
 
   for (let i = 0; i < 5; i++) {
     const data = await callOpenRouter(loop, systemPrompt);
     const choice = data.choices?.[0];
+    if (!choice) {
+      await notifier.notify({ level: 'warning', fn: 'agent/retry', entityId, requestId, message: `Sin choice del modelo (intento ${i + 1}/5), reintentando...` });
+      continue;
+    }
 
-    if (choice?.finish_reason === "tool_calls") {
-      const assistantMsg = choice.message;
-      loop.push(assistantMsg);
+    if (choice.finish_reason === "tool_calls" && choice.message.tool_calls) {
+      loop.push({
+        role: "assistant",
+        content: choice.message.content ?? null,
+        tool_calls: choice.message.tool_calls,
+      });
 
-      for (const toolCall of assistantMsg.tool_calls) {
+      for (const toolCall of choice.message.tool_calls) {
         const toolName = toolCall.function.name;
-        let args: any;
+        let args: Record<string, unknown>;
         try {
           args = JSON.parse(toolCall.function.arguments);
         } catch (parseErr) {
@@ -183,18 +220,10 @@ async function runWithTools(messages: any[], systemPrompt: string, entityId: str
           extra: { args },
         });
 
-        let result: any;
-        if (toolName === "select_user_data") {
-          result = await selectUserData.execute!(args, {} as any);
-        } else if (toolName === "upsert_user_data") {
-          result = await upsertUserData.execute!(args, {} as any);
-        } else if (toolName === "search_knowledge_base") {
-          result = await searchKnowledgeBase.execute!(args, {} as any);
-        } else if (toolName === "transfer_lead") {
-          result = await transferLead.execute!(args, {} as any);
-        } else {
-          result = { error: `Unknown tool: ${toolName}` };
-        }
+        const handler = TOOL_DISPATCH[toolName];
+        const result: unknown = handler
+          ? await handler(args)
+          : { error: `Unknown tool: ${toolName}` };
 
         await notifier.notify({
           level: 'info',
@@ -215,9 +244,12 @@ async function runWithTools(messages: any[], systemPrompt: string, entityId: str
       continue;
     }
 
-    const parsed = safeParseJSON(choice.message.content);
-    if (parsed && Array.isArray(parsed.messages) && parsed.messages.length > 0) {
-      return parsed.messages;
+    const parsed = safeParseJSON(choice.message.content ?? "");
+    if (parsed && typeof parsed === "object" && Array.isArray((parsed as { messages?: unknown }).messages)) {
+      const messagesOut = (parsed as { messages: unknown[] }).messages;
+      if (messagesOut.length > 0 && messagesOut.every((m) => typeof m === "string")) {
+        return messagesOut as string[];
+      }
     }
 
     await notifier.notify({
@@ -238,7 +270,7 @@ async function runWithTools(messages: any[], systemPrompt: string, entityId: str
     requestId,
     message: 'Se agotaron los reintentos, enviando mensaje fallback',
   });
-  return ["Lo siento, no pude procesar tu mensaje. ¿Podrías intentarlo de nuevo?"];
+  return [FALLBACK_MESSAGE];
 }
 
 export async function runAgent(entityId: string, messages: string[], requestId?: string): Promise<string[]> {
@@ -253,8 +285,13 @@ export async function runAgent(entityId: string, messages: string[], requestId?:
 
   const userMessage = messages.join("\n");
 
+  const historyMessages: ChatMessage[] = history.map((h) => ({
+    role: h.role,
+    content: typeof h.content === "string" ? h.content : null,
+  }));
+
   const parts = await runWithTools(
-    [...(history as any[]), { role: "user", content: userMessage }],
+    [...historyMessages, { role: "user", content: userMessage }],
     systemPrompt,
     entityId,
     requestId

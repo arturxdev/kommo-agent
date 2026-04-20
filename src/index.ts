@@ -1,13 +1,14 @@
 import "dotenv/config";
 import crypto from "crypto";
 import express from "express";
-import { handleIncoming } from "./queue/debounce";
+import { enqueueMessage, waitAndDrain } from "./queue/debounce";
 import { processMessage } from "./media";
-import { runAgent } from "./agent";
+import { runAgent, FALLBACK_MESSAGE } from "./agent";
 import { sendMessages } from "./kommo";
 import { notifier } from './notifications/index'
 import { ConsoleChannel } from './notifications/channels/consoleChannel'
 import { FileChannel } from './notifications/channels/fileChannel'
+import { runWithRequestContext } from './observability/context'
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -23,16 +24,17 @@ app.get("/health", (_req, res) => {
 });
 
 app.post("/webhook/kommo", async (req, res) => {
-  res.sendStatus(200);
-
+  console.log(JSON.stringify(req.body))
   const message = req.body?.message?.add?.[0];
-  console.log(message)
   const entityId: string | undefined = message?.entity_id;
-
   const requestId = crypto.randomUUID().slice(0, 8);
 
+  await runWithRequestContext(
+    { requestId, entityId, startedAt: Date.now() },
+    async () => {
   if (!entityId) {
-    await notifier.notify({ level: 'warning', fn: 'webhook/kommo', requestId, message: `Webhook sin entityId: ${JSON.stringify(req.body)}` })
+    await notifier.notify({ level: 'warning', fn: 'webhook/kommo', message: `Webhook sin entityId: ${JSON.stringify(req.body)}` })
+    res.sendStatus(200);
     return;
   }
 
@@ -63,41 +65,114 @@ app.post("/webhook/kommo", async (req, res) => {
     : `texto: "${message?.text ?? ""}"`;
   await notifier.notify({ level: 'info', fn: 'webhook/kommo', entityId, requestId, message: `Mensaje recibido de: ${incomingMessage.author} | ${logPreview}` })
 
-  handleIncoming(entityId, incomingMessage)
-    .then(async (messages) => {
-      if (!messages) return;
+  if (incomingMessage.type === "text" && incomingMessage.text.trim() === "") {
+    await notifier.notify({ level: 'warning', fn: 'webhook/kommo', entityId, requestId, message: `Descartando mensaje de texto vacío` });
+    res.sendStatus(200);
+    return;
+  }
 
-      const processed = await Promise.all(
-        messages.map((m) =>
-          processMessage(m as { type: string; text?: string; url?: string })
-        )
-      );
+  if (incomingMessage.type === "audio" && !incomingMessage.url) {
+    await notifier.notify({ level: 'warning', fn: 'webhook/kommo', entityId, requestId, message: `Descartando audio sin URL` });
+    res.sendStatus(200);
+    return;
+  }
 
+  let myToken: string;
+  try {
+    myToken = await enqueueMessage(entityId, incomingMessage);
+  } catch (err) {
+    await notifier.notify({
+      level: 'error',
+      fn: 'webhook/enqueue',
+      entityId,
+      requestId,
+      message: `Falló encolado en Redis: ${err instanceof Error ? err.message : String(err)}`,
+      error: err,
+    });
+    res.sendStatus(500);
+    return;
+  }
+
+  res.sendStatus(200);
+
+  let delivered = 0;
+  try {
+    const messages = await waitAndDrain(entityId, myToken);
+    if (!messages) return;
+
+    const processed = await Promise.all(
+      messages.map(async (m, idx) => {
+        try {
+          return await processMessage(m as { type: string; text?: string; url?: string; file_name?: string });
+        } catch (err) {
+          await notifier.notify({
+            level: 'error',
+            fn: 'processMessage',
+            entityId,
+            requestId,
+            message: `Falló procesamiento de mensaje ${idx}: ${err instanceof Error ? err.message : String(err)}`,
+            error: err,
+            extra: { index: idx },
+          });
+          return null;
+        }
+      })
+    );
+
+    const validInputs = processed.filter(
+      (s): s is string => typeof s === "string" && s.trim().length > 0
+    );
+
+    if (validInputs.length === 0) {
+      throw new Error("No hay inputs procesables en el batch");
+    }
+
+    const responses = await runAgent(entityId, validInputs, requestId);
+    delivered = await sendMessages(entityId, responses);
+
+    if (delivered === 0) {
+      throw new Error("Ningún chunk llegó a Kommo");
+    }
+
+    await notifier.notify({ level: 'info', fn: 'webhook/pipeline', entityId, requestId, message: `${delivered} chunks enviados de ${responses.length} respuestas` });
+  } catch (err) {
+    await notifier.notify({
+      level: 'error',
+      fn: 'webhook/pipeline',
+      entityId,
+      requestId,
+      message: err instanceof Error ? err.message : String(err),
+      error: err,
+    });
+
+    if (delivered === 0) {
       try {
-        const responses = await runAgent(entityId, processed, requestId);
-        await sendMessages(entityId, responses);
-        await notifier.notify({ level: 'info', fn: 'webhook/pipeline', entityId, requestId, message: `${responses.length} mensajes enviados` });
-      } catch (err) {
+        const fallbackSent = await sendMessages(entityId, [FALLBACK_MESSAGE]);
+        if (fallbackSent === 0) {
+          await notifier.notify({
+            level: 'error',
+            fn: 'webhook/fallback-unreachable',
+            entityId,
+            requestId,
+            message: `Ni el fallback pudo entregarse a Kommo`,
+          });
+        } else {
+          await notifier.notify({ level: 'warning', fn: 'webhook/fallback', entityId, requestId, message: `Fallback enviado al usuario` });
+        }
+      } catch (fallbackErr) {
         await notifier.notify({
           level: 'error',
-          fn: 'webhook/pipeline',
+          fn: 'webhook/fallback-exception',
           entityId,
           requestId,
-          message: err instanceof Error ? err.message : String(err),
-          error: err,
+          message: fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr),
+          error: fallbackErr,
         });
       }
-    })
-    .catch(async (err: unknown) => {
-      await notifier.notify({
-        level: 'error',
-        fn: 'webhook/debounce',
-        entityId,
-        requestId,
-        message: err instanceof Error ? err.message : String(err),
-        error: err,
-      });
-    });
+    }
+  }
+    }
+  );
 });
 
 app.listen(PORT, async () => {

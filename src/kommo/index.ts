@@ -4,6 +4,43 @@ import { notifier } from "../notifications/index";
 const BASE = `https://${process.env.KOMMO_SUBDOMAIN}.kommo.com/api`;
 const TOKEN = () => process.env.KOMMO_TOKEN!;
 
+export const KOMMO_MESSAGE_MAX_CHARS = 256;
+
+export function splitForKommo(
+	text: string,
+	max = KOMMO_MESSAGE_MAX_CHARS,
+): string[] {
+	const trimmed = text.trim();
+	if (!trimmed) return [];
+	if (trimmed.length <= max) return [trimmed];
+
+	const chunks: string[] = [];
+	let rest = trimmed;
+	const minBoundary = Math.floor(max / 2);
+
+	while (rest.length > max) {
+		const window = rest.slice(0, max);
+
+		let cut = Math.max(
+			window.lastIndexOf(". "),
+			window.lastIndexOf("! "),
+			window.lastIndexOf("? "),
+			window.lastIndexOf("\n"),
+		);
+		if (cut >= minBoundary) {
+			cut = cut + 1;
+		} else {
+			cut = window.lastIndexOf(" ");
+			if (cut < minBoundary) cut = max;
+		}
+
+		chunks.push(rest.slice(0, cut).trim());
+		rest = rest.slice(cut).trim();
+	}
+	if (rest) chunks.push(rest);
+	return chunks;
+}
+
 async function request(
 	fnName: string,
 	url: string,
@@ -121,16 +158,32 @@ export async function addLeadNote(
 export async function sendMessages(
 	entityId: string,
 	messages: string[],
-): Promise<void> {
+): Promise<number> {
 	const delay = parseInt(process.env.DELAY_BETWEEN_MESSAGES ?? "1500");
+	const chunks = messages.flatMap((m) => splitForKommo(m));
+	let sent = 0;
 
-	for (const message of messages) {
-		await setResponseField(entityId, message);
-		await launchSalesbot(entityId);
-		await notifier.notify({ level: 'info', fn: 'kommo/sendMessages', entityId, message: `Mensaje enviado: "${message.slice(0, 60)}"` });
+	for (let i = 0; i < chunks.length; i++) {
+		const chunk = chunks[i];
+		try {
+			await setResponseField(entityId, chunk);
+			await launchSalesbot(entityId);
+			sent++;
+			await notifier.notify({ level: 'info', fn: 'kommo/sendMessages', entityId, message: `Chunk ${i + 1}/${chunks.length} enviado: "${chunk.slice(0, 60)}"` });
+		} catch (error) {
+			await notifier.notify({
+				level: 'error',
+				fn: 'kommo/sendMessages',
+				entityId,
+				message: `Falló chunk ${i + 1}/${chunks.length}: ${error instanceof Error ? error.message : String(error)}`,
+				error,
+				extra: { chunkIndex: i, totalChunks: chunks.length, chunkLength: chunk.length, preview: chunk.slice(0, 80) },
+			});
+		}
 
-		if (messages.indexOf(message) < messages.length - 1) {
+		if (i < chunks.length - 1) {
 			await new Promise((r) => setTimeout(r, delay));
 		}
 	}
+	return sent;
 }

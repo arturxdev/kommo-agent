@@ -5,6 +5,9 @@
     "dev": "nodemon --exec ts-node src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "clear:history": "ts-node src/scripts/clearHistory.ts",
     "ingest:docs": "ts-node src/scripts/ingestDocs.ts",
     "check:pinecone": "ts-node src/scripts/checkPinecone.ts"
@@ -30,8 +33,10 @@
     "@types/node": "latest",
     "@types/pg": "latest",
     "@types/uuid": "^10.0.0",
+    "@vitest/coverage-v8": "^4.1.4",
     "nodemon": "latest",
     "ts-node": "latest",
-    "typescript": "latest"
+    "typescript": "latest",
+    "vitest": "^4.1.4"
   }
 }

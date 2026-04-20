@@ -76,7 +76,6 @@ interface UserData {
   person_name: string | null;
   project_name: string | null;
   score?: number;
-  priority?: string;
   tipologia_answer?: string | null;
   tipologia_score?: number;
   separacion_answer?: string | null;
