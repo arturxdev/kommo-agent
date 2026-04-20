@@ -176,7 +176,7 @@ app.post("/webhook/kommo", async (req, res) => {
 });
 
 app.listen(PORT, async () => {
-  await notifier.notify({ level: 'info', fn: 'server', message: `Servidor corriendo en puerto ${PORT} v2` });
+  await notifier.notify({ level: 'info', fn: 'server', message: `Servidor corriendo en puerto ${PORT} v3` });
 });
 
 process.on('uncaughtException', async (err) => {
