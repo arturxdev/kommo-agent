@@ -1,3 +1,5 @@
+import type { AudioFormat } from "./sniffAudio";
+
 export interface WhisperFileHint {
   filename: string;
   contentType: string;
@@ -15,6 +17,26 @@ const EXT_MAP: Record<string, WhisperFileHint> = {
   webm: { filename: "audio.webm", contentType: "audio/webm" },
   flac: { filename: "audio.flac", contentType: "audio/flac" },
 };
+
+const FORMAT_MAP: Record<Exclude<AudioFormat, "unknown">, WhisperFileHint> = {
+  ogg: EXT_MAP.ogg,
+  mp4: EXT_MAP.mp4,
+  mp3: EXT_MAP.mp3,
+  wav: EXT_MAP.wav,
+  webm: EXT_MAP.webm,
+  flac: EXT_MAP.flac,
+};
+
+/**
+ * Deriva filename + mime a partir del formato detectado por magic bytes.
+ * Es la fuente de verdad: Kommo a veces manda file_name: "file.ogg" aunque
+ * el archivo real sea MP4/M4A (audios de iOS). Confiar en el magic evita
+ * que Whisper rechace por extension mentida.
+ */
+export function pickWhisperFileFromFormat(format: AudioFormat): WhisperFileHint | undefined {
+  if (format === "unknown") return undefined;
+  return FORMAT_MAP[format];
+}
 
 /**
  * Deriva filename + mime type adecuados para enviar a OpenAI Whisper
