@@ -1,6 +1,7 @@
 import OpenAI, { toFile } from "openai";
 import { notifier } from "../notifications/index";
 import { pickWhisperFile } from "./toWhisperFile";
+import { sniffAudio } from "./sniffAudio";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -27,6 +28,8 @@ export async function processMessage(message: {
     });
 
     let buffer: Buffer;
+    let sniff: ReturnType<typeof sniffAudio> | undefined;
+    let bodyPreview: string | undefined;
     try {
       const response = await fetch(message.url!);
       const status = response.status;
@@ -72,11 +75,24 @@ export async function processMessage(message: {
         return "[audio no transcribible]";
       }
 
+      sniff = sniffAudio(buffer);
+      bodyPreview = sniff.isKnownAudio
+        ? undefined
+        : buffer.subarray(0, 200).toString('utf8');
+
       await notifier.notify({
         level: 'info',
         fn: 'media/audio',
-        message: `Audio descargado (${buffer.byteLength} bytes)`,
-        extra: { status, contentType, byteLength: buffer.byteLength },
+        message: `Audio descargado (${buffer.byteLength} bytes, ct=${contentType}, magic=${sniff.magic}, format=${sniff.format}${sniff.isKnownAudio ? '' : ' ⚠NO-AUDIO'})`,
+        extra: {
+          status,
+          contentType,
+          byteLength: buffer.byteLength,
+          magic: sniff.magic,
+          format: sniff.format,
+          isKnownAudio: sniff.isKnownAudio,
+          bodyPreview,
+        },
       });
     } catch (err) {
       await notifier.notify({
@@ -107,6 +123,11 @@ export async function processMessage(message: {
           file_name: message.file_name,
           whisperFilename: hint.filename,
           whisperContentType: hint.contentType,
+          byteLength: buffer.byteLength,
+          magic: sniff?.magic,
+          format: sniff?.format,
+          isKnownAudio: sniff?.isKnownAudio,
+          bodyPreview,
         },
       });
       return "[audio no transcribible]";
