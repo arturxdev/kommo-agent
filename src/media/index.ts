@@ -1,6 +1,6 @@
 import OpenAI, { toFile } from "openai";
 import { notifier } from "../notifications/index";
-import { pickWhisperFile } from "./toWhisperFile";
+import { pickWhisperFile, pickWhisperFileFromFormat } from "./toWhisperFile";
 import { sniffAudio } from "./sniffAudio";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -105,7 +105,9 @@ export async function processMessage(message: {
       return "[audio no transcribible]";
     }
 
-    const hint = pickWhisperFile(message.file_name);
+    const hint =
+      (sniff && pickWhisperFileFromFormat(sniff.format)) ??
+      pickWhisperFile(message.file_name);
     let transcription;
     try {
       transcription = await openai.audio.transcriptions.create({
