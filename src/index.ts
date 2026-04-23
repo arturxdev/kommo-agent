@@ -4,7 +4,7 @@ import express from "express";
 import { enqueueMessage, waitAndDrain } from "./queue/debounce";
 import { processMessage } from "./media";
 import { runAgent, FALLBACK_MESSAGE } from "./agent";
-import { sendMessages } from "./kommo";
+import { sendMessages, checkLeadStageAllowed } from "./kommo";
 import { notifier } from './notifications/index'
 import { ConsoleChannel } from './notifications/channels/consoleChannel'
 import { FileChannel } from './notifications/channels/fileChannel'
@@ -73,6 +73,29 @@ app.post("/webhook/kommo", async (req, res) => {
 
   if (incomingMessage.type === "audio" && !incomingMessage.url) {
     await notifier.notify({ level: 'warning', fn: 'webhook/kommo', entityId, requestId, message: `Descartando audio sin URL` });
+    res.sendStatus(200);
+    return;
+  }
+
+  const stageCheck = await checkLeadStageAllowed(entityId);
+  if (stageCheck.error) {
+    await notifier.notify({
+      level: 'warning',
+      fn: 'webhook/stage-check',
+      entityId,
+      requestId,
+      message: `No se pudo verificar etapa, continuando: ${stageCheck.error instanceof Error ? stageCheck.error.message : String(stageCheck.error)}`,
+      error: stageCheck.error,
+    });
+  }
+  if (stageCheck.lead && !stageCheck.allowed) {
+    await notifier.notify({
+      level: 'info',
+      fn: 'webhook/stage-filter',
+      entityId,
+      requestId,
+      message: `Skipped: status_id=${stageCheck.lead.status_id} no está en allowlist`,
+    });
     res.sendStatus(200);
     return;
   }
