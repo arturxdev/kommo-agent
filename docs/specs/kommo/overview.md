@@ -27,3 +27,4 @@
 
 - [split-for-kommo](./split-for-kommo.md)
 - [send-messages](./send-messages.md)
+- [stage-filter](./stage-filter.md)

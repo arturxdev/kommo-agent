@@ -62,13 +62,46 @@ async function request(
 	return res;
 }
 
-export async function getLeadData(entityId: string): Promise<object> {
+export type KommoLead = {
+	id: number;
+	status_id: number;
+	pipeline_id: number;
+	[key: string]: unknown;
+};
+
+export async function getLeadData(entityId: string): Promise<KommoLead> {
 	const res = await request(
 		"getLeadData",
 		`${BASE}/v4/leads/${entityId}?with=source`,
 		{ method: "GET" },
 	);
 	return res.json();
+}
+
+export function parseAllowedStatusIds(raw: string | undefined): number[] {
+	return (raw ?? "94318692")
+		.split(",")
+		.map((s) => s.trim())
+		.filter((s) => s.length > 0)
+		.map((s) => Number(s))
+		.filter((n) => Number.isFinite(n));
+}
+
+export type StageCheckResult =
+	| { allowed: true; lead: KommoLead; error?: undefined }
+	| { allowed: false; lead: KommoLead; error?: undefined }
+	| { allowed: true; lead: null; error: unknown };
+
+export async function checkLeadStageAllowed(
+	entityId: string,
+): Promise<StageCheckResult> {
+	const allowed = parseAllowedStatusIds(process.env.KOMMO_ALLOWED_STATUS_IDS);
+	try {
+		const lead = await getLeadData(entityId);
+		return { allowed: allowed.includes(lead.status_id), lead };
+	} catch (err) {
+		return { allowed: true, lead: null, error: err };
+	}
 }
 
 export async function setResponseField(

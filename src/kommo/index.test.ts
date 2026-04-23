@@ -3,9 +3,12 @@ import {
   splitForKommo,
   sendMessages,
   KOMMO_MESSAGE_MAX_CHARS,
+  parseAllowedStatusIds,
+  checkLeadStageAllowed,
 } from "./index";
 import {
   buildFetchOk,
+  buildFetchError,
   buildFetchMockWithFailures,
   buildTextOfLength,
 } from "../../tests/factories/kommo.factory";
@@ -342,6 +345,144 @@ describe("sendMessages", () => {
       const salesbotCalls = urls.filter((u) => u.includes("/v2/salesbot/")).length;
       expect(setFieldCalls).toBe(3);
       expect(salesbotCalls).toBe(2);
+    });
+  });
+});
+
+describe("parseAllowedStatusIds", () => {
+  it("undefined → default [94318692]", () => {
+    // Act
+    const result = parseAllowedStatusIds(undefined);
+
+    // Assert
+    expect(result).toEqual([94318692]);
+  });
+
+  it("CSV simple '94318692' → [94318692]", () => {
+    expect(parseAllowedStatusIds("94318692")).toEqual([94318692]);
+  });
+
+  it("CSV con varios '94318692,12345' → [94318692, 12345]", () => {
+    expect(parseAllowedStatusIds("94318692,12345")).toEqual([94318692, 12345]);
+  });
+
+  it("CSV con espacios ' 94318692 , 12345 ' → [94318692, 12345]", () => {
+    expect(parseAllowedStatusIds(" 94318692 , 12345 ")).toEqual([
+      94318692,
+      12345,
+    ]);
+  });
+
+  it("string vacío → array vacío []", () => {
+    expect(parseAllowedStatusIds("")).toEqual([]);
+  });
+
+  it("valores inválidos mezclados 'abc,94318692,xyz' → ignora inválidos", () => {
+    expect(parseAllowedStatusIds("abc,94318692,xyz")).toEqual([94318692]);
+  });
+});
+
+describe("checkLeadStageAllowed", () => {
+  let fetchSpy: ReturnType<typeof vi.fn>;
+  const originalAllowed = process.env.KOMMO_ALLOWED_STATUS_IDS;
+
+  beforeEach(() => {
+    fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    if (originalAllowed === undefined) delete process.env.KOMMO_ALLOWED_STATUS_IDS;
+    else process.env.KOMMO_ALLOWED_STATUS_IDS = originalAllowed;
+  });
+
+  describe("✅ Happy path", () => {
+    it("lead con status_id en allowlist default (94318692) → { allowed: true, lead }", async () => {
+      // Arrange
+      delete process.env.KOMMO_ALLOWED_STATUS_IDS;
+      const lead = { id: 1, status_id: 94318692, pipeline_id: 12207252 };
+      fetchSpy.mockResolvedValueOnce(buildFetchOk(lead));
+
+      // Act
+      const result = await checkLeadStageAllowed("1");
+
+      // Assert
+      expect(result.allowed).toBe(true);
+      expect(result.lead).toEqual(lead);
+      expect(result.error).toBeUndefined();
+    });
+
+    it("allowlist custom '94318692,12345' + lead status_id=12345 → allowed", async () => {
+      // Arrange
+      process.env.KOMMO_ALLOWED_STATUS_IDS = "94318692,12345";
+      fetchSpy.mockResolvedValueOnce(
+        buildFetchOk({ id: 2, status_id: 12345, pipeline_id: 9 }),
+      );
+
+      // Act
+      const result = await checkLeadStageAllowed("2");
+
+      // Assert
+      expect(result.allowed).toBe(true);
+    });
+  });
+
+  describe("🚫 Filtered", () => {
+    it("lead status_id fuera de allowlist → { allowed: false, lead }", async () => {
+      // Arrange
+      delete process.env.KOMMO_ALLOWED_STATUS_IDS;
+      const lead = { id: 3, status_id: 99999, pipeline_id: 12207252 };
+      fetchSpy.mockResolvedValueOnce(buildFetchOk(lead));
+
+      // Act
+      const result = await checkLeadStageAllowed("3");
+
+      // Assert
+      expect(result.allowed).toBe(false);
+      expect(result.lead).toEqual(lead);
+    });
+
+    it("allowlist vacía '' + cualquier lead → filtered", async () => {
+      // Arrange
+      process.env.KOMMO_ALLOWED_STATUS_IDS = "";
+      fetchSpy.mockResolvedValueOnce(
+        buildFetchOk({ id: 4, status_id: 94318692, pipeline_id: 12207252 }),
+      );
+
+      // Act
+      const result = await checkLeadStageAllowed("4");
+
+      // Assert
+      expect(result.allowed).toBe(false);
+    });
+  });
+
+  describe("💥 Edge cases (fail-open)", () => {
+    it("getLeadData responde 500 → { allowed: true, lead: null, error }", async () => {
+      // Arrange
+      fetchSpy.mockResolvedValueOnce(buildFetchError(500, "kommo down"));
+
+      // Act
+      const result = await checkLeadStageAllowed("5");
+
+      // Assert
+      expect(result.allowed).toBe(true);
+      expect(result.lead).toBeNull();
+      expect(result.error).toBeDefined();
+    });
+
+    it("fetch throws (red fallida) → { allowed: true, lead: null, error }", async () => {
+      // Arrange
+      fetchSpy.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+
+      // Act
+      const result = await checkLeadStageAllowed("6");
+
+      // Assert
+      expect(result.allowed).toBe(true);
+      expect(result.lead).toBeNull();
+      expect(result.error).toBeInstanceOf(Error);
     });
   });
 });
