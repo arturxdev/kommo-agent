@@ -426,6 +426,40 @@ describe("checkLeadStageAllowed", () => {
       // Assert
       expect(result.allowed).toBe(true);
     });
+
+    it("payload envuelto [{lead_data: {...}}] → lee status_id igual", async () => {
+      // Arrange
+      delete process.env.KOMMO_ALLOWED_STATUS_IDS;
+      fetchSpy.mockResolvedValueOnce(
+        buildFetchOk([
+          { lead_data: { id: 7, status_id: 94318692, pipeline_id: 12207252 } },
+        ]),
+      );
+
+      // Act
+      const result = await checkLeadStageAllowed("7");
+
+      // Assert
+      expect(result.allowed).toBe(true);
+      expect(result.lead?.status_id).toBe(94318692);
+    });
+
+    it("payload envuelto {lead_data: {...}} (sin array) → lee status_id igual", async () => {
+      // Arrange
+      delete process.env.KOMMO_ALLOWED_STATUS_IDS;
+      fetchSpy.mockResolvedValueOnce(
+        buildFetchOk({
+          lead_data: { id: 8, status_id: 94318692, pipeline_id: 12207252 },
+        }),
+      );
+
+      // Act
+      const result = await checkLeadStageAllowed("8");
+
+      // Assert
+      expect(result.allowed).toBe(true);
+      expect(result.lead?.status_id).toBe(94318692);
+    });
   });
 
   describe("🚫 Filtered", () => {

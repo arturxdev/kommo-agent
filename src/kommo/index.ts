@@ -69,13 +69,27 @@ export type KommoLead = {
 	[key: string]: unknown;
 };
 
+function normalizeLeadPayload(raw: unknown): KommoLead {
+	if (Array.isArray(raw)) {
+		const first = raw[0] as Record<string, unknown> | undefined;
+		if (first && typeof first === "object" && "lead_data" in first) {
+			return first.lead_data as KommoLead;
+		}
+		return (first ?? {}) as KommoLead;
+	}
+	if (raw && typeof raw === "object" && "lead_data" in raw) {
+		return (raw as { lead_data: KommoLead }).lead_data;
+	}
+	return raw as KommoLead;
+}
+
 export async function getLeadData(entityId: string): Promise<KommoLead> {
 	const res = await request(
 		"getLeadData",
 		`${BASE}/v4/leads/${entityId}?with=source`,
 		{ method: "GET" },
 	);
-	return res.json();
+	return normalizeLeadPayload(await res.json());
 }
 
 export function parseAllowedStatusIds(raw: string | undefined): number[] {
